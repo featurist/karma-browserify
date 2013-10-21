@@ -10,12 +10,10 @@ fs = require 'fs'
 browserify = require 'browserify'
 through = require 'through'
 chokidar = require 'chokidar'
+bundleConfig = null
 
 # The dependency cache stores all browserify dependencies.
 depsCache = []
-
-# The global dependency bundle reference.
-depsBundle = null
 
 # The temporary `karma-browserify.js` file path.
 tmp = null
@@ -30,8 +28,32 @@ hash = (what) -> crypto.createHash('md5').update(what).digest('base64').slice 0,
 applyConfig = (b, cfg) ->
   (b[c] v for v in [].concat cfg[c] if cfg?[c]? and b?[c]?) for c in configs
 
+refreshDeps = (files, callback) ->
+  newFiles = false
+
+  # add dependencies if they're not already in the cache
+  for d in files when d not in depsCache
+    depsCache.push d
+    newFiles = true
+
+  if newFiles
+    # there are new dependencies so rebuild the dependency bundle
+    writeDeps callback
+  else
+    # there are no new dependencies so no need to rebuild the dependency bundle
+    callback() if callback?
+
+
 # Write the dependency bundle out to the temporary file.
 writeDeps = (callback) ->
+  depsBundle = browserify()
+  applyConfig depsBundle, bundleConfig
+
+  for d in depsCache
+    depsBundle.require d, expose: d
+    # watch the dependency in case it changes
+    watch d if bundleConfig.watch
+
   depsBundle.bundle (err, depsContent) ->
     return err if err
     fs.writeFile tmp, depsContent, (err) ->
@@ -56,10 +78,7 @@ framework = (files, config) ->
   fs.writeFileSync tmp, ''
   files.unshift pattern: tmp, included: true, served: true, watched: true
 
-  # Initialize a browserify bundle for the global dependencies and apply the
-  # Karma configuration.
-  depsBundle = browserify()
-  applyConfig depsBundle, config
+  bundleConfig = config
 
 # ## Preprocessor
 preprocessor = (logger, config) ->
@@ -77,27 +96,18 @@ preprocessor = (logger, config) ->
     # Override the bundle's default dependency handling, adding all dependencies
     # to the dependency cache and excluding them from the file bundle by passing
     # a proxy module which requires the absolute dependency reference.
+    newDeps = []
     deps = (opts) ->
       fileBundle.deps(opts).pipe through (row) ->
         if row.id isnt file.originalPath
-          depsCache.push row.id unless row.id in depsCache
+          newDeps.push row.id unless row.id in newDeps
           row.source = "module.exports=require('#{hash row.id}');"
         @queue row
 
     # Build the file bundle.
     fileBundle.bundle deps: deps, (err, fileContent) ->
-      # Add any new dependencies in the cache to the dependency bundle.
-      added = false   # Keep track of whether we added any.
-      for d in depsCache when d not in depsBundle.files
-        # Expose the bundle with the absolute filename.
-        depsBundle.require d, expose: d
-        # Watch dependency files for changes if requested in the config.
-        watch d if config.watch
-        added = true  # Set the added flag.
-      # Bail and write the file bundle unless new dependencies were added.
-      return done fileContent unless added
-      # Write out the dependency bundle.
-      writeDeps -> done fileContent
+      # refresh the dependency bundle if there are new dependencies
+      refreshDeps newDeps, -> done fileContent
 
 framework.$inject = ['config.files', 'config.browserify']
 preprocessor.$inject = ['logger', 'config.browserify']
