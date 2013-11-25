@@ -46,8 +46,7 @@ refreshDeps = (files, callback) ->
 
 # Write the dependency bundle out to the temporary file.
 writeDeps = (callback) ->
-  depsBundle = browserify()
-  applyConfig depsBundle, bundleConfig
+  depsBundle = configuredBrowserify undefined, bundleConfig
 
   for d in depsCache
     depsBundle.require d, expose: d
@@ -90,8 +89,7 @@ preprocessor = (logger, config) ->
     log.debug 'Processing "%s".', file.originalPath
 
     # Create a file-specific browserify bundle and apply the configuration.
-    fileBundle = browserify path.normalize file.originalPath
-    applyConfig fileBundle, config
+    fileBundle = configuredBrowserify (path.normalize file.originalPath), config
 
     # Override the bundle's default dependency handling, adding all dependencies
     # to the dependency cache and excluding them from the file bundle by passing
@@ -108,6 +106,19 @@ preprocessor = (logger, config) ->
     fileBundle.bundle deps: deps, (err, fileContent) ->
       # refresh the dependency bundle if there are new dependencies
       refreshDeps newDeps, -> done fileContent
+
+configuredBrowserify = (files, config) ->
+  options = {
+    entries: files and [].concat files
+    extensions: config.extension
+    noParse: config.noParse
+  }
+
+  bundle = browserify(options)
+
+  applyConfig bundle, config
+
+  bundle
 
 framework.$inject = ['config.files', 'config.browserify']
 preprocessor.$inject = ['logger', 'config.browserify']
